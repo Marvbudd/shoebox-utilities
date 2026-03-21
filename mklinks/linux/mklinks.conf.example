@@ -1,0 +1,27 @@
+# mklinks configuration file
+# Line 1: Destination directory (where symlinks will be created)
+# Lines 2+: Directory names to exclude (one per line)
+
+/home/mbudd/Pictures/shoebox
+shoebox
+1996-IMAGES
+1997-BuddSlides
+1999-12AlanOZPics
+2006-DaleAussie Pics
+2009-2010Nokia2680
+2010-0213BuddValentines
+2010-0918Melford
+2011-2014NokiaC6
+2017-01RetirementPhotos
+2019-0406Treecache
+2022-1024YardOaks
+2022-1027SylviaFall
+2022-TrailCameraNature
+2023-0421LoveCreekSlides
+2024-0419BuddPam
+2025-1212Amtrak
+2026-0106SniderEstate
+Album Art
+BuddWorksLLC
+Deaf
+Sylvia

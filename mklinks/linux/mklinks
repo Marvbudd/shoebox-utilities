@@ -1,0 +1,195 @@
+#! /usr/bin/bash
+
+################################################################################
+# mklinks - Create symbolic links for media files in destination directory
+################################################################################
+#
+# DESCRIPTION:
+#   This script creates symbolic links for media files (photos, videos, audio)
+#   from a source directory tree to a destination directory organized by type.
+#   It processes directories up to two levels deep and can exclude specific
+#   directories from processing.
+#
+# USAGE:
+#   mklinks <config-file>
+#
+# ARGUMENTS:
+#   config-file  - Path to configuration file (must exist in current directory)
+#                  Format:
+#                    Line 1: Destination directory path
+#                    Lines 2+: Directory names to exclude (one per line)
+#
+# EXAMPLE CONFIG FILE (mklinks.conf):
+#   /home/user/Photos/shoebox
+#   shoebox
+#   Archive
+#   Private
+#   Temp
+#
+# BEHAVIOR:
+#   - Source directory: Current working directory
+#   - Clears existing links in destination audio/photo/video directories
+#   - Creates links for: .jpg, .jpeg, .mov, .mp4, .mp3 (case-insensitive)
+#   - Processes directories up to 2 levels deep
+#   - Skips excluded directories and their subdirectories
+#   - Warns about duplicate filenames (symlink conflicts)
+#
+# EXIT CODES:
+#   0 - Success
+#   1 - Error (missing config file, invalid format, etc.)
+#
+################################################################################
+
+# Validate arguments
+if [[ $# -ne 1 ]]; then
+  echo "Error: Missing required argument" >&2
+  echo "Usage: mklinks <config-file>" >&2
+  exit 1
+fi
+
+CONFIG_FILE="$1"
+
+# Check if config file exists in current directory
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "Error: Config file '$CONFIG_FILE' not found in current directory" >&2
+  exit 1
+fi
+
+# Read configuration file
+# First line is DESTDIR, remaining lines are directories to exclude
+DESTDIR=""
+EXCLUDES=()
+line_num=0
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+  # Skip empty lines and comments
+  [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+  
+  line_num=$((line_num + 1))
+  
+  if [[ $line_num -eq 1 ]]; then
+    DESTDIR="$line"
+  else
+    EXCLUDES+=("$line")
+  fi
+done < "$CONFIG_FILE"
+
+# Validate configuration
+if [[ -z "$DESTDIR" ]]; then
+  echo "Error: Destination directory not specified in config file" >&2
+  exit 1
+fi
+
+if [[ ! -d "$DESTDIR" ]]; then
+  echo "Error: Destination directory does not exist: $DESTDIR" >&2
+  exit 1
+fi
+
+# Source directory is current directory
+SRCDIR="$(pwd)"
+
+echo "Configuration loaded:"
+echo "  Source directory: $SRCDIR"
+echo "  Destination directory: $DESTDIR"
+echo "  Excluded directories: ${#EXCLUDES[@]}"
+for ex in "${EXCLUDES[@]}"; do
+  echo "    - $ex"
+done
+echo ""
+
+# Clear existing symlinks in destination directories
+echo "Clearing existing symlinks..."
+rm -rf "$DESTDIR/audio"/* 2>/dev/null
+rm -rf "$DESTDIR/photo"/* 2>/dev/null
+rm -rf "$DESTDIR/video"/* 2>/dev/null
+echo "Destination directories cleared."
+echo ""
+
+should_exclude() {
+  local path="$1"
+  local rel="$path"
+
+  if [[ -n "$SRCDIR" && "$path" == "$SRCDIR"/* ]]; then
+    rel="${path#"$SRCDIR"/}"
+  fi
+
+  local base
+  base="$(basename "$path")"
+
+  for ex in "${EXCLUDES[@]}"; do
+    if [[ "$rel" == "$ex" || "$base" == "$ex" || "$rel" == "$ex"/* ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+create_links() {
+  local dir="$1"
+  
+  # process files in the directory if it is not in the EXCLUDES
+  if should_exclude "$dir"; then
+    return
+  fi
+  
+  for file in "$dir"/*; do
+    if [[ -f "$file" ]]; then
+      if ! should_exclude "$file"; then
+        handle_file "$file"
+      fi
+    fi
+  done
+  
+  # process files in subdirectories to one level
+  for subdir in "$dir"/*; do
+    if [[ -d "$subdir" ]]; then
+      if should_exclude "$subdir"; then
+        continue
+      fi
+      for subfile in "$subdir"/*; do
+        if [[ -f "$subfile" ]]; then
+          if ! should_exclude "$subfile"; then
+            handle_file "$subfile"
+          fi
+        fi
+      done
+    fi
+  done
+}
+
+handle_file() {
+  local file="$1"
+  
+  if [[ "$file" =~ \.jpg$|\.JPG$|\.jpeg$|\.JPEG$ ]]; then
+    handle_media_file "$file" "photo"
+  elif [[ "$file" =~ \.mov$|\.MOV$|\.mp4$|\.MP4$ ]]; then
+    handle_media_file "$file" "video"
+  elif [[ "$file" =~ \.mp3$|\.MP3$ ]]; then
+    handle_media_file "$file" "audio"
+  fi
+}
+
+handle_media_file() {
+  local file="$1"
+  local media_type="$2"
+  
+  if [[ -e "$DESTDIR/$media_type/$(basename "$file")" ]]; then
+    existing_symlink=$(readlink -f "$DESTDIR/$media_type/$(basename "$file")")
+    echo "File already exists: $file -> $existing_symlink"
+  else
+    echo "Now creating symlink: $file -> $DESTDIR/$media_type/$(basename "$file")"
+    ln -s "$file" "$DESTDIR/$media_type"
+  fi
+}
+
+# iterate over all directories in $SRCDIR and call create_links with the directory
+echo "Creating symlinks for media files..."
+for dir in "$SRCDIR"/*; do
+  if [[ -d "$dir" ]]; then
+    create_links "$dir"
+  fi
+done
+
+echo ""
+echo "Done! Symlinks created from $SRCDIR to $DESTDIR"

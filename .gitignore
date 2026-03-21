@@ -1,0 +1,26 @@
+# User-specific configuration files
+*.conf
+!*.conf.example
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backup files
+*.bak
+*~
+.*.swp
+
+# Logs
+*.log
+
+# IDE/Editor directories
+.vscode/
+.idea/
+*.sublime-*
+
+# Test/temporary directories
+test-data/
+tmp/
+temp/
