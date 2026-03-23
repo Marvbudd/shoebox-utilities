@@ -1,0 +1,243 @@
+#!/bin/bash
+
+# finddups - Find duplicate files and optionally delete local copies
+#
+# For each file in the current directory:
+# - Find all other occurrences of that filename in specified search path
+# - Compare file size and hash to determine if files are identical
+# - Prompt to delete local copy if identical duplicates exist elsewhere
+#
+# Usage: finddups [OPTIONS]
+# Options:
+#   --dry-run          Preview duplicates without prompting to delete
+#   --search-path DIR  Search in DIR instead of home directory (default: ~/)
+#   --quiet            Suppress detailed output, only show duplicates
+#   --help             Show this help message
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Default options
+dry_run=false
+search_path="${HOME}"
+quiet=false
+
+# Statistics
+total_files=0
+unique_files=0
+duplicate_files=0
+identical_copies=0
+deleted_files=0
+
+# Function to display usage
+show_usage() {
+    echo -e "${BLUE}Usage:${NC} $0 [OPTIONS]"
+    echo ""
+    echo "Find duplicate files in current directory and optionally delete them."
+    echo ""
+    echo "Options:"
+    echo "  --dry-run          Preview duplicates without prompting to delete"
+    echo "  --search-path DIR  Search in DIR instead of home directory (default: ~/)"
+    echo "  --quiet            Suppress detailed output, only show duplicates"
+    echo "  --help             Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                              # Find duplicates in home directory"
+    echo "  $0 --dry-run                    # Preview without deleting"
+    echo "  $0 --search-path /Volumes/Backup  # Search in specific directory"
+    echo "  $0 --quiet --dry-run            # Quick scan, no prompts"
+    echo ""
+    exit 0
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        --search-path)
+            search_path="$2"
+            shift 2
+            ;;
+        --quiet)
+            quiet=true
+            shift
+            ;;
+        --help)
+            show_usage
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option: $1${NC}"
+            echo ""
+            show_usage
+            ;;
+    esac
+done
+
+# Validate search path
+if [ ! -d "$search_path" ]; then
+    echo -e "${RED}Error: Search path does not exist: $search_path${NC}"
+    exit 1
+fi
+
+# Header
+echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║${NC}                    ${CYAN}Duplicate File Finder${NC}                      ${BLUE}║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${CYAN}Search path:${NC} $search_path"
+echo -e "${CYAN}Current directory:${NC} $(pwd)"
+if $dry_run; then
+    echo -e "${YELLOW}Mode: DRY RUN (no files will be deleted)${NC}"
+fi
+if $quiet; then
+    echo -e "${CYAN}Mode: Quiet (only showing duplicates)${NC}"
+fi
+echo ""
+
+# Process each file in current directory
+for file in *; do
+    # Skip if not a regular file
+    if [ ! -f "$file" ]; then
+        continue
+    fi
+    
+    ((total_files++))
+    
+    # Get absolute path of current file
+    current_path=$(realpath "$file" 2>/dev/null || greadlink -f "$file" 2>/dev/null || echo "$(cd "$(dirname "$file")"; pwd)/$(basename "$file")")
+    
+    # Find all instances of this filename in search path
+    # Redirect stderr to suppress permission denied errors
+    matches=$(find "$search_path" -name "$file" -type f 2>/dev/null | grep -v "^${current_path}$")
+    
+    if [ -z "$matches" ]; then
+        # No duplicates found
+        ((unique_files++))
+        if ! $quiet; then
+            echo -e "${CYAN}────────────────────────────────────────${NC}"
+            echo -e "${GREEN}✓${NC} File: ${CYAN}$file${NC} (unique)"
+            ls -lah "$file"
+            echo
+        fi
+        continue
+    fi
+    
+    # Get size and hash of current file (macOS compatible)
+    current_size=$(stat -f%z "$file" 2>/dev/null)
+    current_hash=$(shasum -a 256 "$file" 2>/dev/null | awk '{print $1}')
+    
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}⚑${NC} File: ${CYAN}$file${NC}"
+    echo -e "  Current location: ${BLUE}$current_path${NC}"
+    echo -e "  Size: $current_size bytes"
+    echo -e "  Hash: ${current_hash:0:16}..."
+    ls -lah "$file" | awk '{print "  " $0}'
+    echo ""
+    echo -e "${YELLOW}Found in other locations:${NC}"
+    
+    has_identical=false
+    has_nonidentical=false
+    match_count=0
+    
+    # Check each match
+    while IFS= read -r match_path; do
+        if [ -z "$match_path" ]; then
+            continue
+        fi
+        
+        ((match_count++))
+        match_size=$(stat -f%z "$match_path" 2>/dev/null)
+        
+        echo -e "  ${CYAN}────────────────────────────────────────${NC}"
+        echo -e "  Location: ${BLUE}$match_path${NC}"
+        ls -lah "$match_path" | awk '{print "    " $0}'
+        echo "    Size: $match_size bytes"
+        
+        if [ "$current_size" != "$match_size" ]; then
+            echo -e "    Status: ${RED}⚠ DIFFERENT${NC} - Size differs"
+            has_nonidentical=true
+        else
+            match_hash=$(shasum -a 256 "$match_path" 2>/dev/null | awk '{print $1}')
+            echo "    Hash: ${match_hash:0:16}..."
+            if [ "$current_hash" = "$match_hash" ]; then
+                echo -e "    Status: ${GREEN}✓ IDENTICAL${NC} (same size and content)"
+                has_identical=true
+                ((identical_copies++))
+            else
+                echo -e "    Status: ${RED}⚠ DIFFERENT${NC} - Size matches but content differs"
+                has_nonidentical=true
+            fi
+        fi
+        echo
+    done <<< "$matches"
+    
+    # Prompt user or report
+    echo -e "${CYAN}────────────────────────────────────────${NC}"
+    if [ "$has_identical" = true ]; then
+        ((duplicate_files++))
+        echo -e "${GREEN}✓ Found $match_count copy/copies - at least one IDENTICAL${NC}"
+        if [ "$has_nonidentical" = true ]; then
+            echo -e "${YELLOW}⚠ Also found non-identical files with same name${NC}"
+        fi
+        echo
+        
+        if $dry_run || $quiet; then
+            echo -e "${YELLOW}[Dry run - would prompt to delete '$file']${NC}"
+        else
+            while true; do
+                read -p "Delete current file '$file'? [D=delete, Return=skip]: " choice
+                case "$choice" in
+                    [Dd])
+                        rm -v "$file"
+                        echo -e "${GREEN}✓ Deleted: $file${NC}"
+                        ((deleted_files++))
+                        break
+                        ;;
+                    "")
+                        echo -e "${CYAN}○ Skipped${NC}"
+                        break
+                        ;;
+                    *)
+                        echo "Invalid choice. Use 'D' to delete or press Return to skip."
+                        ;;
+                esac
+            done
+        fi
+    else
+        if [ "$has_nonidentical" = true ]; then
+            echo -e "${YELLOW}⚠ Found files with same name but DIFFERENT content (not duplicates)${NC}"
+        else
+            echo -e "${CYAN}○ No identical duplicates found${NC}"
+        fi
+        if ! $dry_run && ! $quiet; then
+            read -p "Press Return to continue..." dummy
+        fi
+    fi
+    echo
+done
+
+# Summary
+echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}Scan complete${NC}"
+echo -e "${BLUE}────────────────────────────────────────${NC}"
+echo -e "  Total files scanned:     ${CYAN}$total_files${NC}"
+echo -e "  Unique files:            ${GREEN}$unique_files${NC}"
+echo -e "  Files with duplicates:   ${YELLOW}$duplicate_files${NC}"
+echo -e "  Identical copies found:  ${CYAN}$identical_copies${NC}"
+if ! $dry_run; then
+    echo -e "  Files deleted:           ${RED}$deleted_files${NC}"
+fi
+echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
+
+if $dry_run && [ $duplicate_files -gt 0 ]; then
+    echo ""
+    echo -e "${YELLOW}Run without --dry-run to interactively delete duplicates${NC}"
+fi

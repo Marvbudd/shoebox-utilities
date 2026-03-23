@@ -1,0 +1,460 @@
+#!/usr/bin/env node
+
+/**
+ * unsymlink - Remove symlinks and accession entries for files in a directory
+ * 
+ * Usage: unsymlink --accessions-file <path> [options] <source-directory-path>
+ * 
+ * When you want to remove files from your shoebox archive that are symlinked
+ * from a specific source directory, this script:
+ * 1. Finds all symlinks in photo/, video/, audio/ pointing to files in that directory
+ * 2. Removes those symlinks
+ * 3. Removes corresponding entries from accessions.json (matched by link field)
+ * 4. Leaves the original files in the source directory untouched
+ * 
+ * Example:
+ *   unsymlink --accessions-file ~/archive/accessions.json \
+ *     /home/mbudd/Documents/GOIndia/2017-KollegalStore
+ */
+
+import fs from 'fs';
+import path from 'path';
+import readline from 'readline';
+
+// ANSI color codes
+const colors = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  dim: '\x1b[2m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  cyan: '\x1b[36m',
+  gray: '\x1b[90m'
+};
+
+// Box-drawing characters
+const box = {
+  topLeft: '╔',
+  topRight: '╗',
+  bottomLeft: '╚',
+  bottomRight: '╝',
+  horizontal: '═',
+  vertical: '║',
+  dividerLeft: '╟',
+  dividerRight: '╢'
+};
+
+// Media directories to check
+const MEDIA_DIRS = ['photo', 'video', 'audio'];
+
+/**
+ * Print usage and exit
+ */
+function printUsage(isHelp = false) {
+  const header = isHelp ? `
+${colors.bright}${box.topLeft}${'═'.repeat(68)}${box.topRight}${colors.reset}
+${colors.bright}${box.vertical} ${colors.cyan}unsymlink${colors.reset}${colors.bright} - Remove symlinks and accession entries${' '.repeat(17)}${box.vertical}${colors.reset}
+${colors.bright}${box.bottomLeft}${'═'.repeat(68)}${box.bottomRight}${colors.reset}
+` : '';
+
+  console.log(`${header}
+${colors.bright}USAGE:${colors.reset}
+  unsymlink --accessions-file <path> [options] <source-directory>
+
+${colors.bright}REQUIRED:${colors.reset}
+  ${colors.cyan}--accessions-file${colors.reset} <path>    Path to accessions.json file
+  ${colors.cyan}<source-directory>${colors.reset}         Directory containing files to unlink
+
+${colors.bright}OPTIONS:${colors.reset}
+  ${colors.cyan}--dry-run${colors.reset}                 Preview changes without modifying files
+  ${colors.cyan}--help${colors.reset}                    Show this help message
+
+${colors.bright}DESCRIPTION:${colors.reset}
+  Removes symlinks from photo/, video/, and audio/ directories that point
+  to files in the specified source directory, and removes corresponding
+  entries from accessions.json.
+
+${colors.bright}EXAMPLES:${colors.reset}
+  ${colors.gray}# Preview what would be removed${colors.reset}
+  unsymlink --accessions-file ~/archive/accessions.json \\
+    --dry-run /home/user/imported/event-photos
+
+  ${colors.gray}# Remove symlinks and update accessions${colors.reset}
+  unsymlink --accessions-file ~/archive/accessions.json \\
+    /home/user/imported/event-photos
+
+${colors.bright}SAFETY:${colors.reset}
+  • Original files in source directory are never modified
+  • Backup of accessions.json is created before changes
+  • Interactive confirmation required unless --dry-run
+  • Use --dry-run to preview before making changes
+`);
+  
+  process.exit(isHelp ? 0 : 1);
+}
+
+/**
+ * Parse command-line arguments
+ */
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const options = {
+    accessionsFile: null,
+    sourceDir: null,
+    dryRun: false,
+    help: false
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === '--help' || arg === '-h') {
+      options.help = true;
+    } else if (arg === '--dry-run') {
+      options.dryRun = true;
+    } else if (arg === '--accessions-file') {
+      if (i + 1 >= args.length) {
+        console.error(`${colors.red}Error:${colors.reset} --accessions-file requires a path argument\n`);
+        printUsage();
+      }
+      options.accessionsFile = args[++i];
+    } else if (arg.startsWith('--')) {
+      console.error(`${colors.red}Error:${colors.reset} Unknown option: ${arg}\n`);
+      printUsage();
+    } else {
+      if (options.sourceDir) {
+        console.error(`${colors.red}Error:${colors.reset} Multiple source directories specified\n`);
+        printUsage();
+      }
+      options.sourceDir = arg;
+    }
+  }
+
+  return options;
+}
+
+/**
+ * Validate arguments
+ */
+function validateArgs(options) {
+  if (options.help) {
+    printUsage(true);
+  }
+
+  if (!options.accessionsFile) {
+    console.error(`${colors.red}Error:${colors.reset} --accessions-file is required\n`);
+    printUsage();
+  }
+
+  if (!options.sourceDir) {
+    console.error(`${colors.red}Error:${colors.reset} Source directory argument is required\n`);
+    printUsage();
+  }
+
+  // Expand tilde in accessions file path
+  if (options.accessionsFile.startsWith('~/')) {
+    options.accessionsFile = path.join(process.env.HOME, options.accessionsFile.slice(2));
+  }
+
+  // Check if accessions.json exists
+  if (!fs.existsSync(options.accessionsFile)) {
+    console.error(`${colors.red}Error:${colors.reset} accessions.json not found at ${options.accessionsFile}`);
+    process.exit(1);
+  }
+
+  // Remove trailing slash from source directory
+  options.sourceDir = options.sourceDir.replace(/\/$/, '');
+
+  // Convert to absolute path if relative
+  if (!path.isAbsolute(options.sourceDir)) {
+    options.sourceDir = path.resolve(process.cwd(), options.sourceDir);
+  }
+
+  // Check if source directory exists
+  if (!fs.existsSync(options.sourceDir)) {
+    console.error(`${colors.red}Error:${colors.reset} Source directory does not exist: ${options.sourceDir}`);
+    process.exit(1);
+  }
+
+  if (!fs.statSync(options.sourceDir).isDirectory()) {
+    console.error(`${colors.red}Error:${colors.reset} Not a directory: ${options.sourceDir}`);
+    process.exit(1);
+  }
+
+  return options;
+}
+
+/**
+ * Find and optionally remove symlinks pointing to files in source directory
+ */
+function findAndRemoveSymlinks(sourceDir, resourceDir, dryRun) {
+  const foundSymlinks = [];
+  
+  for (const mediaType of MEDIA_DIRS) {
+    const mediaDirPath = path.join(resourceDir, mediaType);
+    
+    if (!fs.existsSync(mediaDirPath)) {
+      console.log(`  ${colors.gray}Directory not found: ${mediaType}/ (skipping)${colors.reset}`);
+      continue;
+    }
+    
+    console.log(`\n${colors.bright}Scanning ${mediaType}/ directory...${colors.reset}`);
+    
+    // Get all files in the media directory
+    const files = fs.readdirSync(mediaDirPath);
+    let foundInDir = 0;
+    
+    for (const file of files) {
+      const filePath = path.join(mediaDirPath, file);
+      
+      // Check if it's a symlink
+      try {
+        const stats = fs.lstatSync(filePath);
+        
+        if (stats.isSymbolicLink()) {
+          // Get the target of the symlink
+          const target = fs.readlinkSync(filePath);
+          
+          // Check if target is in the source directory
+          // Handle both absolute and relative paths
+          const absoluteTarget = path.isAbsolute(target) 
+            ? target 
+            : path.resolve(path.dirname(filePath), target);
+          
+          if (absoluteTarget.startsWith(sourceDir + path.sep)) {
+            foundInDir++;
+            console.log(`  ${colors.cyan}→${colors.reset} ${file} ${colors.gray}→ ${target}${colors.reset}`);
+            
+            foundSymlinks.push({
+              link: file,
+              type: mediaType,
+              target: target,
+              filePath: filePath
+            });
+            
+            // Remove the symlink (unless dry run)
+            if (!dryRun) {
+              fs.unlinkSync(filePath);
+              console.log(`    ${colors.green}✓ Removed symlink${colors.reset}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`  ${colors.red}Error processing ${file}: ${error.message}${colors.reset}`);
+      }
+    }
+    
+    if (foundInDir === 0) {
+      console.log(`  ${colors.gray}No matching symlinks found${colors.reset}`);
+    }
+  }
+  
+  return foundSymlinks;
+}
+
+/**
+ * Load accessions.json
+ */
+function loadAccessions(accessionsFile) {
+  try {
+    const fileContent = fs.readFileSync(accessionsFile, 'utf8');
+    return JSON.parse(fileContent);
+  } catch (error) {
+    console.error(`${colors.red}Error reading accessions.json: ${error.message}${colors.reset}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Save accessions.json with backup
+ */
+function saveAccessions(data, accessionsFile) {
+  try {
+    // Create backup
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${accessionsFile}.backup.${timestamp}`;
+    fs.copyFileSync(accessionsFile, backupPath);
+    console.log(`\n${colors.green}✓ Backup created: ${colors.cyan}${path.basename(backupPath)}${colors.reset}`);
+    
+    // Write updated file
+    const json = JSON.stringify(data, null, 2);
+    fs.writeFileSync(accessionsFile, json);
+    console.log(`${colors.green}✓ Updated accessions.json${colors.reset}`);
+    
+  } catch (error) {
+    console.error(`${colors.red}Error saving accessions.json: ${error.message}${colors.reset}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Remove items from accessions.json
+ */
+function removeFromAccessions(foundSymlinks, accessionsFile, dryRun) {
+  if (foundSymlinks.length === 0) {
+    console.log(`\n${colors.gray}No symlinks found, skipping accessions.json update${colors.reset}`);
+    return 0;
+  }
+  
+  console.log(`\n${colors.bright}${dryRun ? 'Preview: ' : ''}Updating accessions.json...${colors.reset}`);
+  
+  const data = loadAccessions(accessionsFile);
+  
+  if (!data.accessions || !Array.isArray(data.accessions.item)) {
+    console.error(`${colors.red}Error: Invalid accessions.json structure${colors.reset}`);
+    process.exit(1);
+  }
+  
+  // Create a set of links to remove for faster lookup
+  const linksToRemove = new Set(foundSymlinks.map(s => s.link));
+  
+  // Track original count
+  const originalCount = data.accessions.item.length;
+  
+  // Find items that would be removed
+  const itemsToRemove = data.accessions.item.filter(item => linksToRemove.has(item.link));
+  
+  itemsToRemove.forEach(item => {
+    console.log(`  ${colors.yellow}×${colors.reset} ${item.link} ${colors.gray}(accession: ${item.accession})${colors.reset}`);
+  });
+  
+  if (dryRun) {
+    return itemsToRemove.length;
+  }
+  
+  // Filter out items with links that were removed
+  data.accessions.item = data.accessions.item.filter(item => !linksToRemove.has(item.link));
+  
+  const removedCount = originalCount - data.accessions.item.length;
+  
+  // Save the updated file
+  saveAccessions(data, accessionsFile);
+  
+  return removedCount;
+}
+
+/**
+ * Confirm action with user
+ */
+function confirmAction() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  return new Promise((resolve) => {
+    rl.question(`\n${colors.yellow}Proceed with removing symlinks and updating accessions.json? (y/N)${colors.reset} `, (answer) => {
+      rl.close();
+      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
+    });
+  });
+}
+
+/**
+ * Print header
+ */
+function printHeader() {
+  console.log(`${colors.bright}${box.topLeft}${'═'.repeat(68)}${box.topRight}${colors.reset}`);
+  console.log(`${colors.bright}${box.vertical} ${colors.cyan}Unsymlink${colors.reset}${colors.bright} - Remove symlinks and accession entries${' '.repeat(17)}${box.vertical}${colors.reset}`);
+  console.log(`${colors.bright}${box.bottomLeft}${'═'.repeat(68)}${box.bottomRight}${colors.reset}\n`);
+}
+
+/**
+ * Print summary
+ */
+function printSummary(foundSymlinks, removedCount, dryRun) {
+  console.log(`\n${colors.bright}${box.topLeft}${'═'.repeat(68)}${box.topRight}${colors.reset}`);
+  console.log(`${colors.bright}${box.vertical} ${dryRun ? 'Preview ' : ''}Summary${' '.repeat(dryRun ? 54 : 56)}${box.vertical}${colors.reset}`);
+  console.log(`${colors.bright}${box.dividerLeft}${'─'.repeat(68)}${box.dividerRight}${colors.reset}`);
+  
+  // Count by type
+  const byType = {};
+  foundSymlinks.forEach(s => {
+    byType[s.type] = (byType[s.type] || 0) + 1;
+  });
+  
+  console.log(`${colors.bright}${box.vertical}${colors.reset} Symlinks ${dryRun ? 'found' : 'removed'}:${' '.repeat(40)}${colors.cyan}${foundSymlinks.length}${colors.reset} ${colors.bright}${box.vertical}${colors.reset}`);
+  
+  Object.entries(byType).forEach(([type, count]) => {
+    const label = `   • ${type}:`;
+    const padding = ' '.repeat(60 - label.length - count.toString().length);
+    console.log(`${colors.bright}${box.vertical}${colors.reset} ${label}${padding}${colors.cyan}${count}${colors.reset} ${colors.bright}${box.vertical}${colors.reset}`);
+  });
+  
+  console.log(`${colors.bright}${box.vertical}${colors.reset} Accession entries ${dryRun ? 'to remove' : 'removed'}:${' '.repeat(29)}${colors.cyan}${removedCount}${colors.reset} ${colors.bright}${box.vertical}${colors.reset}`);
+  console.log(`${colors.bright}${box.bottomLeft}${'═'.repeat(68)}${box.bottomRight}${colors.reset}`);
+  
+  if (dryRun) {
+    console.log(`\n${colors.yellow}ℹ${colors.reset}  ${colors.bright}DRY RUN${colors.reset} - No changes were made`);
+    console.log(`  Run without ${colors.cyan}--dry-run${colors.reset} to apply these changes`);
+  } else {
+    console.log(`\n${colors.green}✓ Unsymlink completed successfully!${colors.reset}`);
+  }
+}
+
+/**
+ * Main function
+ */
+async function main() {
+  // Parse and validate arguments
+  const options = parseArgs();
+  validateArgs(options);
+  
+  printHeader();
+  
+  if (options.dryRun) {
+    console.log(`${colors.yellow}ℹ${colors.reset}  ${colors.bright}DRY RUN MODE${colors.reset} - No changes will be made\n`);
+  }
+  
+  const resourceDir = path.dirname(options.accessionsFile);
+  
+  console.log(`${colors.gray}Source directory: ${options.sourceDir}${colors.reset}`);
+  console.log(`${colors.gray}Accessions file:  ${options.accessionsFile}${colors.reset}`);
+  console.log(`${colors.gray}Resource dir:     ${resourceDir}${colors.reset}`);
+  
+  // Find (and possibly remove) symlinks
+  console.log(`\n${colors.bright}${'─'.repeat(70)}${colors.reset}`);
+  console.log(`${colors.bright}Finding symlinks...${colors.reset}`);
+  console.log(`${colors.bright}${'─'.repeat(70)}${colors.reset}`);
+  
+  const foundSymlinks = findAndRemoveSymlinks(options.sourceDir, resourceDir, options.dryRun);
+  
+  if (foundSymlinks.length === 0) {
+    console.log(`\n${colors.green}✓ No symlinks found pointing to files in this directory.${colors.reset}`);
+    console.log(`  ${colors.gray}Nothing to do.${colors.reset}`);
+    process.exit(0);
+  }
+  
+  // In dry-run mode or if symlinks not yet removed, preview accessions changes
+  const removedCount = removeFromAccessions(foundSymlinks, options.accessionsFile, options.dryRun);
+  
+  printSummary(foundSymlinks, removedCount, options.dryRun);
+  
+  // If dry-run, we're done
+  if (options.dryRun) {
+    process.exit(0);
+  }
+  
+  // If not dry-run and symlinks were already removed, ask for confirmation before updating accessions
+  const confirmed = await confirmAction();
+  
+  if (!confirmed) {
+    console.log(`\n${colors.yellow}⚠${colors.reset}  Cancelled. Symlinks have been removed, but accessions.json was not updated.`);
+    console.log(`  ${colors.gray}You may need to manually restore or run the script again.${colors.reset}`);
+    process.exit(0);
+  }
+  
+  // Update accessions.json (for real this time)
+  const finalRemovedCount = removeFromAccessions(foundSymlinks, options.accessionsFile, false);
+  
+  // Final summary
+  printSummary(foundSymlinks, finalRemovedCount, false);
+}
+
+// Run the script
+main().catch(error => {
+  console.error(`\n${colors.red}Fatal error: ${error.message}${colors.reset}`);
+  process.exit(1);
+});

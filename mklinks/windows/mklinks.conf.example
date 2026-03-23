@@ -1,0 +1,21 @@
+# mklinks Configuration File Example (Windows)
+# 
+# Line 1: Destination directory (where symlinks will be created)
+# Lines 2+: Directory names to exclude (one per line)
+# 
+# Empty lines and lines starting with # are ignored
+#
+# Instructions:
+# 1. Copy this file and name it mklinks.conf (or any name)
+# 2. Edit Line 1 to your destination directory path
+# 3. Add any directories you want to exclude (optional)
+# 4. Run: .\mklinks.ps1 mklinks.conf
+
+C:\Users\YourName\Pictures\shoebox
+shoebox
+Archive
+Backup
+Private
+Temp
+node_modules
+.git

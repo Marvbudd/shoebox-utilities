@@ -1,0 +1,343 @@
+#!/bin/bash
+
+##############################################################################
+# resymlink - Rename source directory and update symlinks
+#
+# Usage: resymlink [OPTIONS] <old-directory-path> <new-directory-path>
+#
+# Renames a source directory and updates all symlinks in the shoebox archive
+# that point to files in that directory.
+#
+# Example:
+#   resymlink --archive-dir ~/archive /media/photos/trip2017 /media/photos/vacation2017
+##############################################################################
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Default options
+dry_run=false
+archive_dir=""
+old_dir=""
+new_dir=""
+
+# Statistics
+total_photo=0
+total_video=0
+total_audio=0
+total_updated=0
+
+##############################################################################
+# Functions
+##############################################################################
+
+show_usage() {
+    echo -e "${BLUE}Usage:${NC} $0 [OPTIONS] <old-directory-path> <new-directory-path>"
+    echo ""
+    echo "Rename a source directory and update all symlinks in shoebox archive."
+    echo ""
+    echo "Options:"
+    echo "  --archive-dir DIR  Path to shoebox archive (directory containing photo/video/audio)"
+    echo "  --dry-run          Preview changes without renaming or updating symlinks"
+    echo "  --help             Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0 --archive-dir ~/my-archive \\"
+    echo "     /Volumes/Photos/trip2017 /Volumes/Photos/vacation2017"
+    echo ""
+    echo "  $0 --archive-dir ~/shoebox --dry-run \\"
+    echo "     ~/Photos/OldName ~/Photos/NewName"
+    exit 0
+}
+
+# Validate arguments
+validate_args() {
+    # Check if archive directory is set
+    if [[ -z "$archive_dir" ]]; then
+        echo -e "${RED}Error: --archive-dir is required${NC}"
+        echo ""
+        show_usage
+    fi
+    
+    # Check if both directories are provided
+    if [[ -z "$old_dir" ]] || [[ -z "$new_dir" ]]; then
+        echo -e "${RED}Error: Both old and new directory paths are required${NC}"
+        echo ""
+        show_usage
+    fi
+    
+    # Remove trailing slashes for consistency
+    old_dir="${old_dir%/}"
+    new_dir="${new_dir%/}"
+    archive_dir="${archive_dir%/}"
+    
+    # Convert to absolute paths
+    if [[ ! "$old_dir" = /* ]]; then
+        old_dir="$(cd "$old_dir" 2>/dev/null && pwd)"
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}Error: Could not resolve old directory path${NC}"
+            exit 1
+        fi
+    fi
+    
+    if [[ ! "$archive_dir" = /* ]]; then
+        archive_dir="$(cd "$archive_dir" 2>/dev/null && pwd)"
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}Error: Could not resolve archive directory path${NC}"
+            exit 1
+        fi
+    fi
+    
+    if [[ ! "$new_dir" = /* ]]; then
+        new_dir_parent=$(dirname "$new_dir")
+        new_dir_name=$(basename "$new_dir")
+        if [[ -d "$new_dir_parent" ]]; then
+            new_dir="$(cd "$new_dir_parent" && pwd)/$new_dir_name"
+        else
+            new_dir="$(pwd)/$new_dir"
+        fi
+    fi
+    
+    # Check if old directory exists
+    if [[ ! -d "$old_dir" ]]; then
+        echo -e "${RED}Error: Old directory does not exist: $old_dir${NC}"
+        exit 1
+    fi
+    
+    # Check if new directory already exists
+    if [[ -d "$new_dir" ]]; then
+        echo -e "${RED}Error: New directory already exists: $new_dir${NC}"
+        echo -e "${YELLOW}Choose a different name or remove the existing directory${NC}"
+        exit 1
+    fi
+    
+    # Check if parent of new directory exists
+    new_parent=$(dirname "$new_dir")
+    if [[ ! -d "$new_parent" ]]; then
+        echo -e "${RED}Error: Parent directory does not exist: $new_parent${NC}"
+        exit 1
+    fi
+    
+    # Validate archive directory exists
+    if [[ ! -d "$archive_dir" ]]; then
+        echo -e "${RED}Error: Archive directory not found: $archive_dir${NC}"
+        exit 1
+    fi
+    
+    # Check for photo/video/audio subdirectories
+    has_subdirs=false
+    for subdir in photo video audio; do
+        if [[ -d "$archive_dir/$subdir" ]]; then
+            has_subdirs=true
+            break
+        fi
+    done
+    
+    if ! $has_subdirs; then
+        echo -e "${YELLOW}Warning: No photo/, video/, or audio/ subdirectories found in archive${NC}"
+        echo -e "${YELLOW}Archive directory: $archive_dir${NC}"
+        read -p "Continue anyway? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+}
+
+# Process symlinks in a given directory
+process_directory() {
+    local dir_name="$1"
+    local dir_path="$archive_dir/$dir_name"
+    local count=0
+    
+    if [[ ! -d "$dir_path" ]]; then
+        return 0
+    fi
+    
+    echo -e "${CYAN}Scanning $dir_name/ directory...${NC}"
+    
+    # Find all symlinks in the directory
+    while IFS= read -r -d '' symlink; do
+        # Get the target of the symlink
+        target=$(readlink "$symlink")
+        
+        # Check if this is an absolute path symlink pointing to old directory
+        if [[ "$target" == "$old_dir"/* ]]; then
+            # Extract the relative part after the old directory
+            relative_path="${target#$old_dir/}"
+            
+            # Construct new target path
+            new_target="$new_dir/$relative_path"
+            
+            if $dry_run; then
+                echo -e "${YELLOW}  Would update: $(basename "$symlink")${NC}"
+                echo -e "    Old: $target"
+                echo -e "    New: $new_target"
+            else
+                # Check if the new target exists
+                if [[ ! -e "$new_target" ]]; then
+                    echo -e "${RED}  ✗ Warning: New target doesn't exist: $new_target${NC}"
+                    echo -e "    Symlink: $(basename "$symlink")"
+                    echo -e "    Skipping..."
+                    continue
+                fi
+                
+                # Update the symlink
+                ln -sf "$new_target" "$symlink"
+                
+                if [[ $? -eq 0 ]]; then
+                    echo -e "${GREEN}  ✓ Updated: $(basename "$symlink")${NC}"
+                    echo -e "    Old: $target"
+                    echo -e "    New: $new_target"
+                else
+                    echo -e "${RED}  ✗ Failed to update: $(basename "$symlink")${NC}"
+                    continue
+                fi
+            fi
+            ((count++))
+        fi
+    done < <(find "$dir_path" -type l -print0 2>/dev/null)
+    
+    if [[ $count -eq 0 ]]; then
+        echo -e "  ${CYAN}No symlinks found pointing to old directory${NC}"
+    fi
+    
+    echo ""
+    return $count
+}
+
+##############################################################################
+# Main
+##############################################################################
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --archive-dir)
+            archive_dir="$2"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        --help)
+            show_usage
+            ;;
+        -*)
+            echo -e "${RED}Error: Unknown option: $1${NC}"
+            echo ""
+            show_usage
+            ;;
+        *)
+            if [[ -z "$old_dir" ]]; then
+                old_dir="$1"
+            elif [[ -z "$new_dir" ]]; then
+                new_dir="$1"
+            else
+                echo -e "${RED}Error: Too many arguments${NC}"
+                echo ""
+                show_usage
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Header
+echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║${NC}              ${CYAN}Resymlink - Directory Rename & Update${NC}            ${BLUE}║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# Validate arguments
+validate_args
+
+echo -e "${CYAN}Configuration:${NC}"
+echo "  Old directory: $old_dir"
+echo "  New directory: $new_dir"
+echo "  Archive dir:   $archive_dir"
+if $dry_run; then
+    echo -e "  ${YELLOW}Mode: DRY RUN (no changes will be made)${NC}"
+fi
+echo ""
+
+# Confirm with user unless in dry-run mode
+if ! $dry_run; then
+    read -p "Proceed with renaming directory and updating symlinks? (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        exit 0
+    fi
+    echo ""
+fi
+
+# Rename the directory
+if $dry_run; then
+    echo -e "${YELLOW}[Dry run] Would rename directory:${NC}"
+    echo "  From: $old_dir"
+    echo "  To:   $new_dir"
+    echo ""
+else
+    echo -e "${CYAN}Renaming directory...${NC}"
+    mv "$old_dir" "$new_dir"
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}✗ Failed to rename directory${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Directory renamed successfully${NC}"
+    echo ""
+fi
+
+# Process each media type directory
+process_directory "photo"
+total_photo=$?
+total_updated=$((total_updated + total_photo))
+
+process_directory "video"
+total_video=$?
+total_updated=$((total_updated + total_video))
+
+process_directory "audio"
+total_audio=$?
+total_updated=$((total_updated + total_audio))
+
+# Summary
+echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}Summary:${NC}"
+echo -e "${BLUE}────────────────────────────────────────${NC}"
+echo "  Photo symlinks: $total_photo"
+echo "  Video symlinks: $total_video"
+echo "  Audio symlinks: $total_audio"
+echo -e "${CYAN}  Total symlinks: $total_updated${NC}"
+echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
+
+if $dry_run; then
+    if [[ $total_updated -gt 0 ]]; then
+        echo ""
+        echo -e "${YELLOW}Dry run complete. Run without --dry-run to apply changes.${NC}"
+    else
+        echo ""
+        echo -e "${YELLOW}No symlinks found pointing to the old directory.${NC}"
+    fi
+elif [[ $total_updated -gt 0 ]]; then
+    echo ""
+    echo -e "${GREEN}✓ Directory renamed and symlinks updated successfully!${NC}"
+else
+    echo ""
+    echo -e "${YELLOW}Directory renamed, but no symlinks were updated.${NC}"
+    echo -e "${YELLOW}Possible reasons:${NC}"
+    echo -e "${YELLOW}  - No symlinks point to files in this directory${NC}"
+    echo -e "${YELLOW}  - The symlinks use relative paths instead of absolute paths${NC}"
+fi
+
+exit 0

@@ -4,6 +4,38 @@
 
 The `mklinks` script creates symbolic links for media files (photos, videos, audio) from a source directory tree to a destination directory organized by media type. It's useful for creating a flat view of media files scattered across a deep directory structure.
 
+## Platform Support
+
+mklinks is available for multiple platforms:
+
+- **Linux**: Bash script using `ln -s` → [linux/mklinks](linux/mklinks)
+- **macOS**: Bash script using `ln -s` → [macos/mklinks](macos/mklinks)
+- **Windows**: PowerShell script using `mklink` (via `New-Item -ItemType SymbolicLink`) → [windows/mklinks.ps1](windows/mklinks.ps1)
+
+All versions use the same configuration file format and provide the same core functionality.
+
+### Quick Start by Platform
+
+**Linux/macOS:**
+```bash
+cd /path/to/your/photos
+./path/to/mklinks/linux/mklinks mklinks.conf
+```
+
+**Windows (PowerShell):**
+```powershell
+cd C:\path\to\your\photos
+.\path\to\mklinks\windows\mklinks.ps1 mklinks.conf
+```
+
+**Windows (Batch file):**
+```cmd
+cd C:\path\to\your\photos
+\path\to\mklinks\windows\mklinks.bat mklinks.conf
+```
+
+For platform-specific details, see the README in each platform directory.
+
 ## Features
 
 - Processes current directory as source
