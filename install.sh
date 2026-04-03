@@ -63,7 +63,7 @@ uninstall() {
     if [ -L "$TARGET" ]; then
       rm "$TARGET"
       echo "  Removed: ${util}"
-      ((REMOVED++))
+      REMOVED=$((REMOVED + 1))
     fi
   done
   
@@ -73,7 +73,7 @@ uninstall() {
     if [ -L "$TARGET" ]; then
       rm "$TARGET"
       echo "  Removed: ${util}"
-      ((REMOVED++))
+      REMOVED=$((REMOVED + 1))
     fi
   done
   
@@ -115,10 +115,10 @@ install() {
       # Create symlink
       ln -s "$SOURCE" "$TARGET"
       echo "  Installed: ${util}"
-      ((INSTALLED++))
+      INSTALLED=$((INSTALLED + 1))
     else
       echo "  Skipped: ${util} (not available for ${OS_DIR})"
-      ((SKIPPED++))
+      SKIPPED=$((SKIPPED + 1))
     fi
   done
   
@@ -138,14 +138,14 @@ install() {
         # Create symlink
         ln -s "$SOURCE" "$TARGET"
         echo "  Installed: ${util}"
-        ((INSTALLED++))
+        INSTALLED=$((INSTALLED + 1))
       else
         echo "  Warning: ${util} is not executable, skipping"
-        ((SKIPPED++))
+        SKIPPED=$((SKIPPED + 1))
       fi
     else
       echo "  Skipped: ${util} (not found)"
-      ((SKIPPED++))
+      SKIPPED=$((SKIPPED + 1))
     fi
   done
   
